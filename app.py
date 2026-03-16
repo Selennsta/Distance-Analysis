@@ -30,6 +30,7 @@ if os.path.exists(summary_path):
 # --- MAIN ANALYSIS ---
 if os.path.exists(nn_path):
     nn_df = pd.read_csv(nn_path)
+    st.session_state['df'] = nn_df
     
     # Selection UI
     product_list = sorted(nn_df.iloc[:, 0].unique())
@@ -75,6 +76,7 @@ if os.path.exists(nn_path):
 
         # 2) Distance histogram
         dm = load_distance_matrix(dm_path)
+        st.session_state['dist_matrix'] = dm.values
         st.plotly_chart(plot_distance_histogram(dm), use_container_width=True)
 
         # 3) PCA embedding + highlight selected + neighbors
@@ -89,3 +91,28 @@ if os.path.exists(nn_path):
 
 else:
     st.error(f"No analysis data found for {category}. Please ensure the distance matrix script has been run.")
+
+# --- Task 3: Product Removal Simulation ---
+st.markdown("---")
+st.subheader("Simulation: Product Removal")
+
+from dashboard.simulation import simulate_removal
+
+products_to_remove = st.multiselect("Select Products to Remove", product_list)
+threshold = st.number_input("Optional Gap Threshold", min_value=0.0, value=0.0)
+
+if st.button("Simulate Removal"):
+    result = simulate_removal(dm, st.session_state['dist_matrix'], products_to_remove, threshold)
+
+    if 'error' in result:
+        st.error(result['error'])
+    else:
+        st.write(f"Mean Substitute Distance: {result['mean_dist']:.2f}")
+        st.write(f"Max Substitute Distance: {result['max_dist']:.2f}")
+
+        st.subheader("Substitutes")
+        for removed, info in result['substitutes'].items():
+            st.write(f"- Removed {removed} → Substitute {info['substitute']} (dist {info['distance']:.2f})")
+
+        if threshold:
+            st.write("Gaps:", ", ".join(result.get('gaps', [])))
