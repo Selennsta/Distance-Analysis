@@ -13,13 +13,13 @@ category = st.sidebar.selectbox(
     ["Smartphones", "Tractors", "User Upload"]
 )
 
-# Map the selection to Peter's folder names
 folder_name = category.lower().replace(" ", "_")
 base_path = os.path.join("outputs", folder_name)
 
-# Paths for the specific files in Peter's folder structure
 nn_path = os.path.join(base_path, "nearest_neighbors.csv")
 summary_path = os.path.join(base_path, "distance_summary.txt")
+dm_path = os.path.join(base_path, "distance_matrix.csv")
+pre_path = os.path.join(base_path, "preprocessed_output.csv")
 
 # --- DISPLAY SUMMARY STATS ---
 if os.path.exists(summary_path):
@@ -27,21 +27,34 @@ if os.path.exists(summary_path):
         summary_text = f.read()
     st.sidebar.info(f"**Category Summary:**\n\n{summary_text}")
 
+# --- PRE-LOAD NUMERIC DATA (needed for feature comparison + PCA) ---
+pre = None
+dm = None
+if os.path.exists(pre_path):
+    pre = load_preprocessed_numeric(pre_path)
+if os.path.exists(dm_path):
+    dm = load_distance_matrix(dm_path)
+
+if pre is not None and dm is not None and len(pre) == len(dm):
+    pre.index = dm.index
+
 # --- MAIN ANALYSIS ---
 if os.path.exists(nn_path):
     nn_df = pd.read_csv(nn_path)
     st.session_state['df'] = nn_df
-    
+    if dm is not None:
+        st.session_state['dist_matrix'] = dm.values
+
     # Selection UI
     product_list = sorted(nn_df.iloc[:, 0].unique())
     selected_product = st.selectbox("Select a Product to find neighbors", product_list)
-    
+
     # Filter Results
     results = nn_df[nn_df.iloc[:, 0] == selected_product].sort_values('distance')
-    
+
     # Layout with Columns
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.subheader(f"Top Nearest Neighbors for {selected_product}")
         display_results = results.iloc[:, [2, -1]].head(5)
@@ -50,23 +63,63 @@ if os.path.exists(nn_path):
 
     with col2:
         st.subheader("Market Impact Analysis")
-        top_neighbor_dist = results['distance'].iloc[0] # The closest distance
-        
+        top_neighbor_dist = results['distance'].iloc[0]
+        closest_neighbor_name = results.iloc[0, 2]
+
+        # Compare specs feature-by-feature to explain WHY
+        diffs = None
+        if pre is not None and selected_product in pre.index and closest_neighbor_name in pre.index:
+            p1_specs = pre.loc[selected_product]
+            p2_specs = pre.loc[closest_neighbor_name]
+            diffs = (p1_specs - p2_specs).abs().sort_values()
+
+        # Display Alerts with Strategic Business Insights
         if top_neighbor_dist < 0.05:
-            st.error(f"Cannibalization Alert: Extreme overlap detected (Dist: {top_neighbor_dist:.4f})")
+            st.error(f"🔴 Cannibalization Risk (Dist: {top_neighbor_dist:.4f})")
+            st.markdown(
+                f"**{selected_product}** and **{closest_neighbor_name}** are near-identical in the market. "
+                "Keeping both creates internal competition and dilutes market share."
+            )
+            if diffs is not None:
+                overlap_features = ", ".join(diffs.index[:5])
+                st.markdown(f"**Overlapping specs:** {overlap_features}")
+                st.markdown("**💡 Recommendation:** Consider rationalizing/removing one product from the portfolio. "
+                           "Consolidating into a single SKU can reduce costs and strengthen positioning.")
+
         elif top_neighbor_dist < 0.50:
-            st.warning(f"Significant Overlap: High competition detected (Dist: {top_neighbor_dist:.4f})")
+            st.warning(f"🟡 Significant Overlap (Dist: {top_neighbor_dist:.4f})")
+            st.markdown(
+                f"**{selected_product}** competes closely with **{closest_neighbor_name}**. "
+                "Consumers may struggle to distinguish between the two."
+            )
+            if diffs is not None:
+                shared_list = diffs.index[:5].tolist()
+                shared_features = ", ".join(shared_list)
+                
+                diff_candidates = [f for f in diffs.tail(5).index[::-1] if f not in shared_list]
+                diff_features = ", ".join(diff_candidates[:3])
+                st.markdown(f"**Shared ground:** {shared_features}")
+                st.markdown(f"**Key differentiators to leverage:** {diff_features}")
+                st.markdown("**💡 Recommendation:** Sharpen the value proposition — emphasize the differentiating "
+                           "features in marketing to carve out distinct customer segments.")
+
         else:
-            st.success(f"Unique Positioning: Product is well-differentiated (Dist: {top_neighbor_dist:.4f})")
-            
-        st.info("Rule Logic: Cannibalization < 0.05 | Overlap < 0.50 | Unique > 0.50")
+            st.success(f"🟢 Unique Positioning (Dist: {top_neighbor_dist:.4f})")
+            st.markdown(
+                f"**{selected_product}** is well-differentiated from its nearest competitor "
+                f"**{closest_neighbor_name}**. It occupies a distinct market position."
+            )
+            if diffs is not None:
+                strengths = ", ".join(diffs.tail(5).index[::-1])
+                st.markdown(f"**Competitive advantages:** {strengths}")
+                st.markdown("**💡 Recommendation:** Invest in distribution and marketing to maximize reach. "
+                           "This product fills a unique gap in the portfolio — protect and develop it.")
+
+        st.caption("Alert Logic: 🔴 Cannibalization < 0.05 | 🟡 Overlap < 0.50 | 🟢 Unique > 0.50")
 
     # --- Task 2 Visualizations ---
-    dm_path = os.path.join(base_path, "distance_matrix.csv")
-    pre_path = os.path.join(base_path, "preprocessed_output.csv")
-
-    if os.path.exists(dm_path) and os.path.exists(pre_path):
-        st.subheader("Visualizations (Task 2)")
+    if dm is not None and pre is not None:
+        st.subheader("Visual Analytics")
 
         # 1) Neighbor bar
         topk = results.sort_values("distance").head(10)
@@ -75,12 +128,9 @@ if os.path.exists(nn_path):
         st.plotly_chart(plot_neighbor_bar(nb_df, selected_product), use_container_width=True)
 
         # 2) Distance histogram
-        dm = load_distance_matrix(dm_path)
-        st.session_state['dist_matrix'] = dm.values
         st.plotly_chart(plot_distance_histogram(dm), use_container_width=True)
 
         # 3) PCA embedding + highlight selected + neighbors
-        pre = load_preprocessed_numeric(pre_path)
         emb_df = compute_pca_embedding(pre, list(dm.index))
         st.plotly_chart(
             plot_embedding(emb_df, selected=selected_product, neighbors=nb_df["neighbor"].tolist()),
@@ -98,21 +148,25 @@ st.subheader("Simulation: Product Removal")
 
 from dashboard.simulation import simulate_removal
 
-products_to_remove = st.multiselect("Select Products to Remove", product_list)
-threshold = st.number_input("Optional Gap Threshold", min_value=0.0, value=0.0)
+if os.path.exists(nn_path):
+    products_to_remove = st.multiselect("Select Products to Remove", product_list)
+    threshold = st.number_input("Optional Gap Threshold", min_value=0.0, value=0.0)
 
-if st.button("Simulate Removal"):
-    result = simulate_removal(dm, st.session_state['dist_matrix'], products_to_remove, threshold)
+    if st.button("Simulate Removal"):
+        if dm is not None:
+            result = simulate_removal(dm, st.session_state['dist_matrix'], products_to_remove, threshold)
 
-    if 'error' in result:
-        st.error(result['error'])
-    else:
-        st.write(f"Mean Substitute Distance: {result['mean_dist']:.2f}")
-        st.write(f"Max Substitute Distance: {result['max_dist']:.2f}")
+            if 'error' in result:
+                st.error(result['error'])
+            else:
+                st.write(f"Mean Substitute Distance: {result['mean_dist']:.2f}")
+                st.write(f"Max Substitute Distance: {result['max_dist']:.2f}")
 
-        st.subheader("Substitutes")
-        for removed, info in result['substitutes'].items():
-            st.write(f"- Removed {removed} → Substitute {info['substitute']} (dist {info['distance']:.2f})")
+                st.subheader("Substitutes")
+                for removed, info in result['substitutes'].items():
+                    st.write(f"- Removed {removed} → Substitute {info['substitute']} (dist {info['distance']:.2f})")
 
-        if threshold:
-            st.write("Gaps:", ", ".join(result.get('gaps', [])))
+                if threshold:
+                    st.write("Gaps:", ", ".join(result.get('gaps', [])))
+        else:
+            st.error("Distance matrix not available. Cannot run simulation.")
